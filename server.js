@@ -13,7 +13,12 @@ const app = express();
 
 // Middleware
 app.use(cors({ origin: process.env.CLIENT_URL, credentials: true }));
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({
+    limit: '10mb',
+    verify: (req, res, buf) => {
+        req.rawBody = buf;
+    },
+}));
 app.use(express.urlencoded({ extended: true }));
 
 // Static uploads folder
@@ -26,6 +31,8 @@ app.use('/api/appointments', require('./routes/appointmentRoutes'));
 app.use('/api/payments', require('./routes/paymentRoutes'));
 app.use('/api/reviews', require('./routes/reviewRoutes'));
 app.use('/api/admin', require('./routes/adminRoutes'));
+app.use('/api/contact', require('./routes/contactRoutes'));
+app.use('/api/notifications', require('./routes/notificationRoutes'));
 
 // Health check
 app.get('/api/health', (req, res) => {

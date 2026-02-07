@@ -2,6 +2,7 @@ const asyncHandler = require('express-async-handler');
 const Appointment = require('../models/Appointment');
 const Doctor = require('../models/Doctor');
 const Payment = require('../models/Payment');
+const Notification = require('../models/Notification');
 
 // @desc    Create appointment (patient books)
 // @route   POST /api/appointments
@@ -35,6 +36,14 @@ const createAppointment = asyncHandler(async (req, res) => {
         fee: doctor.fee,
         status: 'pending',
         paymentStatus: 'pending',
+    });
+
+    await Notification.create({
+        user: doctor.user,
+        title: 'New appointment request',
+        message: `New appointment requested for ${appointment.date.toDateString()} at ${appointment.timeSlot}.`,
+        type: 'appointment',
+        meta: { appointmentId: appointment._id.toString() },
     });
 
     res.status(201).json({ success: true, appointment });
@@ -101,6 +110,14 @@ const acceptAppointment = asyncHandler(async (req, res) => {
     appointment.status = 'confirmed';
     await appointment.save();
 
+    await Notification.create({
+        user: appointment.patient,
+        title: 'Appointment confirmed',
+        message: `Your appointment has been confirmed for ${appointment.date.toDateString()} at ${appointment.timeSlot}.`,
+        type: 'appointment',
+        meta: { appointmentId: appointment._id.toString() },
+    });
+
     res.json({ success: true, appointment });
 });
 
@@ -124,6 +141,14 @@ const rejectAppointment = asyncHandler(async (req, res) => {
     appointment.cancelledBy = 'doctor';
     appointment.cancelReason = req.body.reason || 'Rejected by doctor';
     await appointment.save();
+
+    await Notification.create({
+        user: appointment.patient,
+        title: 'Appointment rejected',
+        message: `Your appointment request was rejected. Reason: ${req.body.reason || 'Not provided'}.`,
+        type: 'appointment',
+        meta: { appointmentId: appointment._id.toString() },
+    });
 
     // Refund if paid
     if (appointment.paymentStatus === 'paid') {
@@ -161,6 +186,14 @@ const completeAppointment = asyncHandler(async (req, res) => {
 
     appointment.status = 'completed';
     await appointment.save();
+
+    await Notification.create({
+        user: appointment.patient,
+        title: 'Appointment completed',
+        message: `Your appointment on ${appointment.date.toDateString()} at ${appointment.timeSlot} is marked as completed.`,
+        type: 'appointment',
+        meta: { appointmentId: appointment._id.toString() },
+    });
 
     // Update doctor stats
     const uniquePatients = await Appointment.distinct('patient', {

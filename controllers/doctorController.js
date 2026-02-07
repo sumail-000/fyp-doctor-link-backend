@@ -174,17 +174,35 @@ const getDoctor = asyncHandler(async (req, res) => {
 // @desc    Get doctor's available slots for a date range (public - for booking)
 // @route   GET /api/doctors/:id/slots
 const getDoctorSlots = asyncHandler(async (req, res) => {
+    const Appointment = require('../models/Appointment');
     const doctor = await Doctor.findById(req.params.id).select('schedule fee fullName');
     if (!doctor) {
         res.status(404);
         throw new Error('Doctor not found');
     }
 
-    // Return the schedule (frontend will compute available dates from this)
+    // If a specific date is provided, return booked slots for that date
+    let bookedSlots = [];
+    if (req.query.date) {
+        const queryDate = new Date(req.query.date);
+        queryDate.setHours(0, 0, 0, 0);
+        const nextDay = new Date(queryDate);
+        nextDay.setDate(nextDay.getDate() + 1);
+
+        const bookedAppointments = await Appointment.find({
+            doctor: doctor._id,
+            date: { $gte: queryDate, $lt: nextDay },
+            status: { $in: ['pending', 'confirmed'] },
+        }).select('timeSlot');
+
+        bookedSlots = bookedAppointments.map(a => a.timeSlot);
+    }
+
     res.json({
         success: true,
         schedule: doctor.schedule,
         fee: doctor.fee,
+        bookedSlots,
     });
 });
 
@@ -224,6 +242,10 @@ const updateMyProfile = asyncHandler(async (req, res) => {
     // Sync name to user
     if (req.body.fullName) {
         await User.findByIdAndUpdate(req.user._id, { name: req.body.fullName });
+    }
+
+    if (req.body.avatar !== undefined) {
+        await User.findByIdAndUpdate(req.user._id, { avatar: req.body.avatar });
     }
 
     res.json({ success: true, doctor });

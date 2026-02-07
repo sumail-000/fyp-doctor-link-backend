@@ -3,6 +3,7 @@ const Appointment = require('../models/Appointment');
 const Payment = require('../models/Payment');
 const Doctor = require('../models/Doctor');
 const Setting = require('../models/Setting');
+const Notification = require('../models/Notification');
 
 // @desc    Create payment intent (Stripe checkout)
 // @route   POST /api/payments/create-checkout
@@ -90,7 +91,8 @@ const stripeWebhook = asyncHandler(async (req, res) => {
 
     let event;
     try {
-        event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
+        const payload = req.rawBody || req.body;
+        event = stripe.webhooks.constructEvent(payload, sig, process.env.STRIPE_WEBHOOK_SECRET);
     } catch (err) {
         res.status(400);
         throw new Error(`Webhook Error: ${err.message}`);
@@ -115,6 +117,25 @@ const stripeWebhook = asyncHandler(async (req, res) => {
                     appointment.status = 'confirmed';
                 }
                 await appointment.save();
+
+                await Notification.create({
+                    user: appointment.patient,
+                    title: 'Payment successful',
+                    message: 'Your payment was successful and your appointment is confirmed.',
+                    type: 'payment',
+                    meta: { appointmentId: appointment._id.toString(), paymentId: payment._id.toString() },
+                });
+
+                const doctorDoc = await Doctor.findById(payment.doctor).select('user');
+                if (doctorDoc?.user) {
+                    await Notification.create({
+                        user: doctorDoc.user,
+                        title: 'New paid appointment',
+                        message: 'A patient completed payment for an appointment.',
+                        type: 'payment',
+                        meta: { appointmentId: appointment._id.toString(), paymentId: payment._id.toString() },
+                    });
+                }
             }
 
             // Update doctor earnings
