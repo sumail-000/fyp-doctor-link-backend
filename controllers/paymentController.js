@@ -9,6 +9,7 @@ const Notification = require('../models/Notification');
 // @route   POST /api/payments/create-checkout
 const createCheckout = asyncHandler(async (req, res) => {
     const { appointmentId } = req.body;
+    const User = require('../models/User');
 
     const appointment = await Appointment.findById(appointmentId).populate({
         path: 'doctor',
@@ -39,11 +40,15 @@ const createCheckout = asyncHandler(async (req, res) => {
     const platformFee = Math.round(amount * (platformFeePercent / 100));
     const doctorEarning = amount - platformFee;
 
+    // Get patient email for Stripe checkout
+    const patient = await User.findById(req.user._id).select('email');
+
     // Create Stripe checkout session
     const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
     const session = await stripe.checkout.sessions.create({
         payment_method_types: ['card'],
+        customer_email: patient?.email || undefined,
         line_items: [{
             price_data: {
                 currency: 'pkr',
@@ -51,18 +56,24 @@ const createCheckout = asyncHandler(async (req, res) => {
                     name: `Consultation with ${appointment.doctor.fullName}`,
                     description: `Appointment on ${appointment.date.toDateString()} at ${appointment.timeSlot}`,
                 },
-                unit_amount: amount * 100, // Stripe uses smallest currency unit
+                unit_amount: amount * 100,
             },
             quantity: 1,
         }],
         mode: 'payment',
-        success_url: `${process.env.CLIENT_URL}/patient/appointments?payment=success`,
+        success_url: `${process.env.CLIENT_URL}/patient/appointments?payment=success&session_id={CHECKOUT_SESSION_ID}`,
         cancel_url: `${process.env.CLIENT_URL}/patient/appointments?payment=cancelled`,
         metadata: {
             appointmentId: appointment._id.toString(),
             patientId: req.user._id.toString(),
             doctorId: appointment.doctor._id.toString(),
         },
+    });
+
+    // Remove any old pending payment for this appointment (retry scenario)
+    await Payment.deleteMany({
+        appointment: appointment._id,
+        status: 'pending',
     });
 
     // Create payment record
@@ -148,6 +159,87 @@ const stripeWebhook = asyncHandler(async (req, res) => {
     res.json({ received: true });
 });
 
+// @desc    Verify Stripe checkout session and update payment/appointment status
+// @route   POST /api/payments/verify-session
+const verifySession = asyncHandler(async (req, res) => {
+    const { sessionId } = req.body;
+
+    if (!sessionId) {
+        res.status(400);
+        throw new Error('Session ID is required');
+    }
+
+    const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+
+    // Retrieve the session from Stripe
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+
+    if (!session) {
+        res.status(404);
+        throw new Error('Session not found');
+    }
+
+    // Find the payment record
+    const payment = await Payment.findOne({ stripeSessionId: sessionId });
+    if (!payment) {
+        res.status(404);
+        throw new Error('Payment record not found');
+    }
+
+    // Already processed
+    if (payment.status === 'completed') {
+        const appointment = await Appointment.findById(payment.appointment);
+        return res.json({ success: true, already: true, payment, appointment });
+    }
+
+    // Check if payment was successful
+    if (session.payment_status === 'paid') {
+        payment.status = 'completed';
+        payment.stripePaymentIntentId = session.payment_intent;
+        await payment.save();
+
+        // Update appointment
+        const appointment = await Appointment.findById(payment.appointment);
+        if (appointment) {
+            appointment.paymentStatus = 'paid';
+            appointment.paymentId = session.payment_intent;
+            if (appointment.status === 'pending') {
+                appointment.status = 'confirmed';
+            }
+            await appointment.save();
+
+            // Notifications
+            await Notification.create({
+                user: appointment.patient,
+                title: 'Payment successful',
+                message: 'Your payment was successful and your appointment is confirmed.',
+                type: 'payment',
+                meta: { appointmentId: appointment._id.toString(), paymentId: payment._id.toString() },
+            });
+
+            const doctorDoc = await Doctor.findById(payment.doctor).select('user');
+            if (doctorDoc?.user) {
+                await Notification.create({
+                    user: doctorDoc.user,
+                    title: 'New paid appointment',
+                    message: 'A patient completed payment for an appointment.',
+                    type: 'payment',
+                    meta: { appointmentId: appointment._id.toString(), paymentId: payment._id.toString() },
+                });
+            }
+
+            // Update doctor earnings
+            await Doctor.findByIdAndUpdate(payment.doctor, {
+                $inc: { totalEarnings: payment.doctorEarning },
+            });
+
+            return res.json({ success: true, payment, appointment });
+        }
+    }
+
+    res.json({ success: false, message: 'Payment not completed yet', status: session.payment_status });
+});
+
 // @desc    Simulate payment success (for development without Stripe)
 // @route   POST /api/payments/simulate
 const simulatePayment = asyncHandler(async (req, res) => {
@@ -207,4 +299,4 @@ const getMyPayments = asyncHandler(async (req, res) => {
     res.json({ success: true, count: payments.length, payments });
 });
 
-module.exports = { createCheckout, stripeWebhook, simulatePayment, getMyPayments };
+module.exports = { createCheckout, stripeWebhook, verifySession, simulatePayment, getMyPayments };

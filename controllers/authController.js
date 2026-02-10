@@ -79,13 +79,26 @@ const getMe = asyncHandler(async (req, res) => {
 // @desc    Update user profile
 // @route   PUT /api/auth/profile
 const updateProfile = asyncHandler(async (req, res) => {
-    const { name, phone, city, avatar } = req.body;
+    const { name, email, phone, city, avatar, dob, gender, address } = req.body;
 
     const user = await User.findById(req.user._id);
+
+    if (email && email !== user.email) {
+        const exists = await User.findOne({ email, _id: { $ne: user._id } });
+        if (exists) {
+            res.status(400);
+            throw new Error('Email already in use by another account');
+        }
+        user.email = email;
+    }
+
     if (name) user.name = name;
     if (phone !== undefined) user.phone = phone;
     if (city !== undefined) user.city = city;
     if (avatar !== undefined) user.avatar = avatar;
+    if (dob !== undefined) user.dob = dob;
+    if (gender !== undefined) user.gender = gender;
+    if (address !== undefined) user.address = address;
 
     await user.save();
 

@@ -231,6 +231,17 @@ const cancelAppointment = asyncHandler(async (req, res) => {
     appointment.cancelReason = req.body.reason || 'Cancelled by patient';
     await appointment.save();
 
+    const doctor = await Doctor.findById(appointment.doctor).select('user');
+    if (doctor?.user) {
+        await Notification.create({
+            user: doctor.user,
+            title: 'Appointment cancelled',
+            message: `A patient cancelled their appointment on ${appointment.date.toDateString()} at ${appointment.timeSlot}.`,
+            type: 'appointment',
+            meta: { appointmentId: appointment._id.toString() },
+        });
+    }
+
     // Refund if paid
     if (appointment.paymentStatus === 'paid') {
         await Payment.findOneAndUpdate(
