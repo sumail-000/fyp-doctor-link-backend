@@ -639,6 +639,39 @@ const dismissAnnouncement = asyncHandler(async (req, res) => {
     res.json({ success: true, message: 'Announcement dismissed' });
 });
 
+// @desc    Change admin's own password
+// @route   PUT /api/admin/change-password
+const changeAdminPassword = asyncHandler(async (req, res) => {
+    const { currentPassword, newPassword } = req.body;
+    if (!currentPassword || !newPassword) { res.status(400); throw new Error('Current and new password are required'); }
+    if (newPassword.length < 6) { res.status(400); throw new Error('New password must be at least 6 characters'); }
+
+    const admin = await User.findById(req.user._id).select('+password');
+    if (!admin) { res.status(404); throw new Error('Admin not found'); }
+
+    const isMatch = await bcrypt.compare(currentPassword, admin.password);
+    if (!isMatch) { res.status(401); throw new Error('Current password is incorrect'); }
+
+    admin.password = newPassword;
+    await admin.save();
+    res.json({ success: true, message: 'Password changed successfully' });
+});
+
+// @desc    Reset all settings to defaults
+// @route   PUT /api/admin/settings/reset
+const resetAllSettings = asyncHandler(async (req, res) => {
+    await Setting.deleteMany({});
+    const settings = await Setting.create({});
+    res.json({ success: true, message: 'Settings reset to defaults', settings });
+});
+
+// @desc    Clear all notifications
+// @route   DELETE /api/admin/notifications/clear
+const clearAllNotifications = asyncHandler(async (req, res) => {
+    const result = await Notification.deleteMany({});
+    res.json({ success: true, message: `Cleared ${result.deletedCount} notifications` });
+});
+
 module.exports = {
     getDashboardStats,
     getPendingDoctors, approveDoctor, rejectDoctor, getAllDoctors, editDoctor,
@@ -648,7 +681,8 @@ module.exports = {
     getAllAppointments, overrideAppointmentStatus,
     getAllPayments,
     getReports,
-    getSettings, updateSettings,
+    getSettings, updateSettings, resetAllSettings,
+    changeAdminPassword, clearAllNotifications,
     getAnnouncements, createAnnouncement, updateAnnouncement, deleteAnnouncement,
     getActiveAnnouncements, dismissAnnouncement,
 };

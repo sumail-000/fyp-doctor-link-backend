@@ -9,7 +9,8 @@ const {
     getAllAppointments, overrideAppointmentStatus,
     getAllPayments,
     getReports,
-    getSettings, updateSettings,
+    getSettings, updateSettings, resetAllSettings,
+    changeAdminPassword, clearAllNotifications,
     getAnnouncements, createAnnouncement, updateAnnouncement, deleteAnnouncement,
 } = require('../controllers/adminController');
 const { protect, authorize } = require('../middleware/auth');
@@ -48,6 +49,13 @@ router.get('/reports', getReports);
 // Settings
 router.get('/settings', getSettings);
 router.put('/settings', updateSettings);
+router.put('/settings/reset', resetAllSettings);
+
+// Security
+router.put('/change-password', changeAdminPassword);
+
+// Notifications
+router.delete('/notifications/clear', clearAllNotifications);
 
 // Announcements
 router.get('/announcements', getAnnouncements);
