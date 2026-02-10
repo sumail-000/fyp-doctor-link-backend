@@ -11,13 +11,15 @@ const { protect, authorize } = require('../middleware/auth');
 router.post('/', protect, authorize('patient'), createAppointment);
 router.get('/my', protect, authorize('patient'), getMyAppointments);
 router.get('/dashboard', protect, authorize('patient'), getPatientDashboard);
-router.get('/:id', protect, getAppointmentDetail);
-router.put('/:id/cancel', protect, authorize('patient'), cancelAppointment);
 
-// Doctor routes
+// Doctor routes (must come before /:id to avoid "doctor" being treated as an ObjectId)
 router.get('/doctor', protect, authorize('doctor'), getDoctorAppointments);
 router.put('/:id/accept', protect, authorize('doctor'), acceptAppointment);
 router.put('/:id/reject', protect, authorize('doctor'), rejectAppointment);
 router.put('/:id/complete', protect, authorize('doctor'), completeAppointment);
+
+// Param routes (must be last)
+router.get('/:id', protect, getAppointmentDetail);
+router.put('/:id/cancel', protect, authorize('patient'), cancelAppointment);
 
 module.exports = router;

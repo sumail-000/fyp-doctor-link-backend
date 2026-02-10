@@ -2,6 +2,13 @@ const asyncHandler = require('express-async-handler');
 const Doctor = require('../models/Doctor');
 const User = require('../models/User');
 
+// Normalize '9:00 AM' → '09:00 AM' for consistent slot format
+const normalizeSlot = (slot) => {
+    const match = slot.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+    if (!match) return slot;
+    return `${match[1].padStart(2, '0')}:${match[2]} ${match[3].toUpperCase()}`;
+};
+
 // @desc    Apply as doctor (public - creates user + doctor profile)
 // @route   POST /api/doctors/apply
 const applyDoctor = asyncHandler(async (req, res) => {
@@ -209,7 +216,7 @@ const getDoctorSlots = asyncHandler(async (req, res) => {
 // @desc    Get doctor's own profile (authenticated doctor)
 // @route   GET /api/doctors/me/profile
 const getMyProfile = asyncHandler(async (req, res) => {
-    const doctor = await Doctor.findOne({ user: req.user._id });
+    const doctor = await Doctor.findOne({ user: req.user._id }).populate('user', 'name email phone avatar');
     if (!doctor) {
         res.status(404);
         throw new Error('Doctor profile not found');
@@ -260,7 +267,10 @@ const updateSchedule = asyncHandler(async (req, res) => {
         throw new Error('Doctor profile not found');
     }
 
-    doctor.schedule = req.body.schedule;
+    doctor.schedule = (req.body.schedule || []).map(s => ({
+        ...s,
+        slots: (s.slots || []).map(normalizeSlot),
+    }));
     await doctor.save();
 
     res.json({ success: true, schedule: doctor.schedule });
@@ -292,6 +302,7 @@ const getDashboardStats = asyncHandler(async (req, res) => {
 
     res.json({
         success: true,
+        doctorId: doctor._id,
         stats: {
             todayAppointments: todayAppointments.length,
             totalAppointments,

@@ -4,10 +4,18 @@ const Doctor = require('../models/Doctor');
 const Payment = require('../models/Payment');
 const Notification = require('../models/Notification');
 
+// Normalize '9:00 AM' → '09:00 AM' for consistent slot format
+const normalizeSlot = (slot) => {
+    const match = slot.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+    if (!match) return slot;
+    return `${match[1].padStart(2, '0')}:${match[2]} ${match[3].toUpperCase()}`;
+};
+
 // @desc    Create appointment (patient books)
 // @route   POST /api/appointments
 const createAppointment = asyncHandler(async (req, res) => {
     const { doctorId, date, timeSlot } = req.body;
+    const normalizedSlot = normalizeSlot(timeSlot);
 
     const doctor = await Doctor.findById(doctorId);
     if (!doctor || doctor.status !== 'approved') {
@@ -19,7 +27,7 @@ const createAppointment = asyncHandler(async (req, res) => {
     const existingAppointment = await Appointment.findOne({
         doctor: doctorId,
         date: new Date(date),
-        timeSlot,
+        timeSlot: normalizedSlot,
         status: { $in: ['pending', 'confirmed'] },
     });
 
@@ -32,7 +40,7 @@ const createAppointment = asyncHandler(async (req, res) => {
         patient: req.user._id,
         doctor: doctorId,
         date: new Date(date),
-        timeSlot,
+        timeSlot: normalizedSlot,
         fee: doctor.fee,
         status: 'pending',
         paymentStatus: 'pending',
@@ -77,7 +85,9 @@ const getDoctorAppointments = asyncHandler(async (req, res) => {
 
     const { status } = req.query;
     const query = { doctor: doctor._id };
-    if (status && status !== 'all') query.status = status;
+    if (status && status !== 'all') {
+        query.status = status.includes(',') ? { $in: status.split(',') } : status;
+    }
 
     const appointments = await Appointment.find(query)
         .populate('patient', 'name email phone avatar city')

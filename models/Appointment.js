@@ -1,5 +1,15 @@
 const mongoose = require('mongoose');
 
+const rescheduleEntrySchema = new mongoose.Schema({
+    fromDate: { type: Date, required: true },
+    fromTimeSlot: { type: String, required: true },
+    toDate: { type: Date, required: true },
+    toTimeSlot: { type: String, required: true },
+    requestedAt: { type: Date, default: Date.now },
+    status: { type: String, enum: ['pending', 'accepted', 'rejected'], default: 'pending' },
+    respondedAt: { type: Date },
+}, { _id: true });
+
 const appointmentSchema = new mongoose.Schema({
     patient: {
         type: mongoose.Schema.Types.ObjectId,
@@ -21,7 +31,7 @@ const appointmentSchema = new mongoose.Schema({
     },
     status: {
         type: String,
-        enum: ['pending', 'confirmed', 'completed', 'cancelled'],
+        enum: ['pending', 'confirmed', 'completed', 'cancelled', 'no-show', 'rescheduling', 'expired'],
         default: 'pending',
     },
     fee: {
@@ -54,6 +64,35 @@ const appointmentSchema = new mongoose.Schema({
         type: String,
         default: '',
     },
+    // No-show tracking
+    noShowAt: {
+        type: Date,
+    },
+    noShowMarkedBy: {
+        type: String,
+        enum: ['doctor', 'system', ''],
+        default: '',
+    },
+    // Reschedule tracking
+    rescheduleCount: {
+        type: Number,
+        default: 0,
+    },
+    maxReschedules: {
+        type: Number,
+        default: 2,
+    },
+    rescheduleHistory: [rescheduleEntrySchema],
+    // Pending reschedule request (the new slot patient wants)
+    pendingReschedule: {
+        date: { type: Date },
+        timeSlot: { type: String },
+        requestedAt: { type: Date },
+    },
+    // Reminder tracking
+    reminderSentAt: {
+        type: Date,
+    },
 }, {
     timestamps: true,
 });
@@ -61,5 +100,6 @@ const appointmentSchema = new mongoose.Schema({
 appointmentSchema.index({ patient: 1, status: 1 });
 appointmentSchema.index({ doctor: 1, status: 1 });
 appointmentSchema.index({ date: 1, doctor: 1 });
+appointmentSchema.index({ status: 1, date: 1 }); // For auto-detect cron queries
 
 module.exports = mongoose.model('Appointment', appointmentSchema);
