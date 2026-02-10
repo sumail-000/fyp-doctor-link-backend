@@ -31,14 +31,30 @@ const createCheckout = asyncHandler(async (req, res) => {
         throw new Error('Payment already completed');
     }
 
-    // Get platform fee
+    // SECURITY: Always use doctor's current fee from DB, not the stored appointment fee
+    const currentDoctorFee = appointment.doctor.fee;
+    if (!currentDoctorFee || currentDoctorFee <= 0) {
+        res.status(400);
+        throw new Error('Invalid doctor fee configuration');
+    }
+
+    // Sync appointment fee with doctor's current fee (in case it changed)
+    if (appointment.fee !== currentDoctorFee) {
+        appointment.fee = currentDoctorFee;
+        await appointment.save();
+    }
+
+    // Get platform fee settings
     let settings = await Setting.findOne();
     if (!settings) settings = await Setting.create({});
-    const platformFeePercent = settings.platformFeePercent || 10;
+    const patientFeePercent = settings.patientPlatformFeePercent ?? 0;
+    const doctorFeePercent = settings.doctorPlatformFeePercent ?? 10;
 
-    const amount = appointment.fee;
-    const platformFee = Math.round(amount * (platformFeePercent / 100));
-    const doctorEarning = amount - platformFee;
+    const consultationFee = currentDoctorFee;
+    const patientPlatformFee = Math.round(consultationFee * (patientFeePercent / 100));
+    const totalPatientPays = consultationFee + patientPlatformFee;
+    const doctorPlatformFee = Math.round(consultationFee * (doctorFeePercent / 100));
+    const doctorEarning = consultationFee - doctorPlatformFee;
 
     // Get patient email for Stripe checkout
     const patient = await User.findById(req.user._id).select('email');
@@ -46,20 +62,37 @@ const createCheckout = asyncHandler(async (req, res) => {
     // Create Stripe checkout session
     const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
-    const session = await stripe.checkout.sessions.create({
-        payment_method_types: ['card'],
-        customer_email: patient?.email || undefined,
-        line_items: [{
+    // Build line items — always show consultation fee, add patient platform fee line only if > 0
+    const lineItems = [{
+        price_data: {
+            currency: 'pkr',
+            product_data: {
+                name: `Consultation with ${appointment.doctor.fullName}`,
+                description: `${appointment.date.toDateString()} at ${appointment.timeSlot}`,
+            },
+            unit_amount: consultationFee * 100,
+        },
+        quantity: 1,
+    }];
+
+    if (patientPlatformFee > 0) {
+        lineItems.push({
             price_data: {
                 currency: 'pkr',
                 product_data: {
-                    name: `Consultation with ${appointment.doctor.fullName}`,
-                    description: `Appointment on ${appointment.date.toDateString()} at ${appointment.timeSlot}`,
+                    name: 'Platform Service Fee',
+                    description: `${patientFeePercent}% platform fee`,
                 },
-                unit_amount: amount * 100,
+                unit_amount: patientPlatformFee * 100,
             },
             quantity: 1,
-        }],
+        });
+    }
+
+    const session = await stripe.checkout.sessions.create({
+        payment_method_types: ['card'],
+        customer_email: patient?.email || undefined,
+        line_items: lineItems,
         mode: 'payment',
         success_url: `${process.env.CLIENT_URL}/patient/appointments?payment=success&session_id={CHECKOUT_SESSION_ID}`,
         cancel_url: `${process.env.CLIENT_URL}/patient/appointments?payment=cancelled`,
@@ -67,6 +100,7 @@ const createCheckout = asyncHandler(async (req, res) => {
             appointmentId: appointment._id.toString(),
             patientId: req.user._id.toString(),
             doctorId: appointment.doctor._id.toString(),
+            totalAmount: totalPatientPays.toString(),
         },
     });
 
@@ -81,8 +115,9 @@ const createCheckout = asyncHandler(async (req, res) => {
         appointment: appointment._id,
         patient: req.user._id,
         doctor: appointment.doctor._id,
-        amount,
-        platformFee,
+        amount: totalPatientPays,
+        platformFee: doctorPlatformFee,
+        patientPlatformFee,
         doctorEarning,
         status: 'pending',
         stripeSessionId: session.id,
@@ -115,6 +150,13 @@ const stripeWebhook = asyncHandler(async (req, res) => {
         // Update payment
         const payment = await Payment.findOne({ stripeSessionId: session.id });
         if (payment) {
+            // SECURITY: Validate amount matches
+            const expectedAmountInCents = payment.amount * 100;
+            if (session.amount_total && session.amount_total !== expectedAmountInCents) {
+                console.error(`[SECURITY] Payment amount mismatch for session ${session.id}: expected ${expectedAmountInCents}, got ${session.amount_total}`);
+                return res.status(400).json({ error: 'Amount mismatch' });
+            }
+
             payment.status = 'completed';
             payment.stripePaymentIntentId = session.payment_intent;
             await payment.save();
@@ -192,6 +234,13 @@ const verifySession = asyncHandler(async (req, res) => {
         return res.json({ success: true, already: true, payment, appointment });
     }
 
+    // SECURITY: Validate the amount paid matches what we expect
+    const expectedAmountInCents = payment.amount * 100;
+    if (session.amount_total && session.amount_total !== expectedAmountInCents) {
+        res.status(400);
+        throw new Error('Payment amount mismatch — possible tampering detected');
+    }
+
     // Check if payment was successful
     if (session.payment_status === 'paid') {
         payment.status = 'completed';
@@ -251,22 +300,26 @@ const simulatePayment = asyncHandler(async (req, res) => {
         throw new Error('Appointment not found');
     }
 
-    // Get platform fee
+    // Get platform fee settings
     let settings = await Setting.findOne();
     if (!settings) settings = await Setting.create({});
-    const platformFeePercent = settings.platformFeePercent || 10;
+    const patientFeePercent = settings.patientPlatformFeePercent ?? 0;
+    const doctorFeePercent = settings.doctorPlatformFeePercent ?? 10;
 
-    const amount = appointment.fee;
-    const platformFee = Math.round(amount * (platformFeePercent / 100));
-    const doctorEarning = amount - platformFee;
+    const consultationFee = appointment.fee;
+    const patientPlatformFee = Math.round(consultationFee * (patientFeePercent / 100));
+    const totalPatientPays = consultationFee + patientPlatformFee;
+    const doctorPlatformFee = Math.round(consultationFee * (doctorFeePercent / 100));
+    const doctorEarning = consultationFee - doctorPlatformFee;
 
     // Create payment
     const payment = await Payment.create({
         appointment: appointment._id,
         patient: appointment.patient,
         doctor: appointment.doctor,
-        amount,
-        platformFee,
+        amount: totalPatientPays,
+        platformFee: doctorPlatformFee,
+        patientPlatformFee,
         doctorEarning,
         status: 'completed',
         stripePaymentIntentId: `sim_${Date.now()}`,

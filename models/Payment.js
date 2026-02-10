@@ -24,6 +24,10 @@ const paymentSchema = new mongoose.Schema({
         type: Number,
         default: 0,
     },
+    patientPlatformFee: {
+        type: Number,
+        default: 0,
+    },
     doctorEarning: {
         type: Number,
         default: 0,

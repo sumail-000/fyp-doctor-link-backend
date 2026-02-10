@@ -322,14 +322,24 @@ const getMyPatients = asyncHandler(async (req, res) => {
         status: { $in: ['completed', 'confirmed'] },
     }).populate('patient', 'name email phone avatar city createdAt');
 
-    // Deduplicate patients
+    // Deduplicate patients and count appointments per patient
     const patientMap = new Map();
     appointments.forEach(apt => {
-        if (apt.patient && !patientMap.has(apt.patient._id.toString())) {
-            patientMap.set(apt.patient._id.toString(), {
-                ...apt.patient.toObject(),
-                lastVisit: apt.date,
-            });
+        if (apt.patient) {
+            const pid = apt.patient._id.toString();
+            if (!patientMap.has(pid)) {
+                patientMap.set(pid, {
+                    ...apt.patient.toObject(),
+                    lastVisit: apt.date,
+                    totalAppointments: 1,
+                });
+            } else {
+                const existing = patientMap.get(pid);
+                existing.totalAppointments += 1;
+                if (new Date(apt.date) > new Date(existing.lastVisit)) {
+                    existing.lastVisit = apt.date;
+                }
+            }
         }
     });
 

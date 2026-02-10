@@ -290,8 +290,56 @@ const getPatientDashboard = asyncHandler(async (req, res) => {
     });
 });
 
+// @desc    Get single appointment with payment details (patient)
+// @route   GET /api/appointments/:id
+const getAppointmentDetail = asyncHandler(async (req, res) => {
+    const appointment = await Appointment.findById(req.params.id)
+        .populate({
+            path: 'doctor',
+            select: 'fullName specialization avatar location fee rating education languages',
+        })
+        .populate({
+            path: 'patient',
+            select: 'name email phone',
+        });
+
+    if (!appointment) {
+        res.status(404);
+        throw new Error('Appointment not found');
+    }
+
+    // Ensure the requesting user is the patient or the doctor
+    const isPatient = appointment.patient._id.toString() === req.user._id.toString();
+    const doctor = await Doctor.findOne({ user: req.user._id });
+    const isDoctor = doctor && appointment.doctor._id.toString() === doctor._id.toString();
+
+    if (!isPatient && !isDoctor) {
+        res.status(403);
+        throw new Error('Not authorized to view this appointment');
+    }
+
+    // Get payment record for this appointment
+    const payment = await Payment.findOne({
+        appointment: appointment._id,
+        status: { $in: ['completed', 'refunded'] },
+    });
+
+    // Get platform fee settings for display
+    const Setting = require('../models/Setting');
+    let settings = await Setting.findOne();
+    if (!settings) settings = await Setting.create({});
+
+    res.json({
+        success: true,
+        appointment,
+        payment: payment || null,
+        patientPlatformFeePercent: settings.patientPlatformFeePercent ?? 0,
+        doctorPlatformFeePercent: settings.doctorPlatformFeePercent ?? 10,
+    });
+});
+
 module.exports = {
     createAppointment, getMyAppointments, getDoctorAppointments,
     acceptAppointment, rejectAppointment, completeAppointment,
-    cancelAppointment, getPatientDashboard,
+    cancelAppointment, getPatientDashboard, getAppointmentDetail,
 };

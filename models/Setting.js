@@ -14,7 +14,8 @@ const settingSchema = new mongoose.Schema({
     autoApprove: { type: Boolean, default: false },
     maxAppointmentsPerDay: { type: Number, default: 20 },
     cancellationWindow: { type: Number, default: 24 },
-    platformFeePercent: { type: Number, default: 10 },
+    patientPlatformFeePercent: { type: Number, default: 0 },
+    doctorPlatformFeePercent: { type: Number, default: 10 },
     minDoctorFee: { type: Number, default: 500 },
     maxDoctorFee: { type: Number, default: 10000 },
 }, {
