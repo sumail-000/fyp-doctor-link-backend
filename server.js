@@ -12,10 +12,11 @@ connectDB();
 const app = express();
 
 // Middleware
-const allowedOrigins = (process.env.CLIENT_URL || 'http://localhost:5173').split(',').map(s => s.trim());
+const allowedOrigins = (process.env.CLIENT_URL || 'http://localhost:5173').split(',').map(s => s.trim().replace(/\/+$/, ''));
 app.use(cors({
     origin: function (origin, callback) {
-        if (!origin || allowedOrigins.includes(origin)) {
+        const cleanOrigin = origin ? origin.replace(/\/+$/, '') : '';
+        if (!origin || allowedOrigins.includes(cleanOrigin)) {
             callback(null, true);
         } else {
             callback(new Error('Not allowed by CORS'));

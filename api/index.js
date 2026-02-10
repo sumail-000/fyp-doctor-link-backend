@@ -14,12 +14,13 @@ app.use(cors({
     origin: function (origin, callback) {
         const allowedOrigins = (process.env.CLIENT_URL || 'http://localhost:5173')
             .split(',')
-            .map(s => s.trim());
-        if (!origin || allowedOrigins.includes(origin)) {
+            .map(s => s.trim().replace(/\/+$/, '')); // strip trailing slashes
+        const cleanOrigin = origin ? origin.replace(/\/+$/, '') : '';
+        if (!origin || allowedOrigins.includes(cleanOrigin)) {
             callback(null, true);
         } else {
             console.log(`CORS blocked origin: ${origin}, allowed: ${allowedOrigins.join(', ')}`);
-            callback(null, true); // Allow all for now to debug, change back after confirming
+            callback(null, false);
         }
     },
     credentials: true,
