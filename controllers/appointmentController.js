@@ -23,15 +23,23 @@ const createAppointment = asyncHandler(async (req, res) => {
         throw new Error('Doctor not found or not approved');
     }
 
-    // Check if slot is already booked
+    // Check if slot is already booked (include rescheduling to prevent conflicts)
     const existingAppointment = await Appointment.findOne({
         doctor: doctorId,
         date: new Date(date),
         timeSlot: normalizedSlot,
-        status: { $in: ['pending', 'confirmed'] },
+        status: { $in: ['pending', 'confirmed', 'rescheduling'] },
     });
 
-    if (existingAppointment) {
+    // Also check if any rescheduling appointment has this as its pending slot
+    const pendingRescheduleConflict = await Appointment.findOne({
+        doctor: doctorId,
+        'pendingReschedule.date': new Date(date),
+        'pendingReschedule.timeSlot': normalizedSlot,
+        status: 'rescheduling',
+    });
+
+    if (existingAppointment || pendingRescheduleConflict) {
         res.status(400);
         throw new Error('This time slot is already booked');
     }
@@ -318,12 +326,13 @@ const getAppointmentDetail = asyncHandler(async (req, res) => {
         throw new Error('Appointment not found');
     }
 
-    // Ensure the requesting user is the patient or the doctor
+    // Ensure the requesting user is the patient, the doctor, or an admin
+    const isAdmin = req.user.role === 'admin';
     const isPatient = appointment.patient._id.toString() === req.user._id.toString();
     const doctor = await Doctor.findOne({ user: req.user._id });
     const isDoctor = doctor && appointment.doctor._id.toString() === doctor._id.toString();
 
-    if (!isPatient && !isDoctor) {
+    if (!isPatient && !isDoctor && !isAdmin) {
         res.status(403);
         throw new Error('Not authorized to view this appointment');
     }
@@ -348,8 +357,290 @@ const getAppointmentDetail = asyncHandler(async (req, res) => {
     });
 });
 
+// @desc    Mark appointment as no-show (doctor)
+// @route   PUT /api/appointments/:id/no-show
+const markNoShow = asyncHandler(async (req, res) => {
+    const doctor = await Doctor.findOne({ user: req.user._id });
+    const appointment = await Appointment.findById(req.params.id);
+
+    if (!appointment) {
+        res.status(404);
+        throw new Error('Appointment not found');
+    }
+
+    if (appointment.doctor.toString() !== doctor._id.toString()) {
+        res.status(403);
+        throw new Error('Not authorized');
+    }
+
+    if (appointment.status !== 'confirmed') {
+        res.status(400);
+        throw new Error('Only confirmed appointments can be marked as no-show');
+    }
+
+    // Ensure appointment date+time has passed
+    const now = new Date();
+    const aptDate = new Date(appointment.date);
+    if (aptDate > now) {
+        res.status(400);
+        throw new Error('Cannot mark future appointments as no-show');
+    }
+
+    appointment.status = 'no-show';
+    appointment.noShowAt = now;
+    appointment.noShowMarkedBy = 'doctor';
+    await appointment.save();
+
+    await Notification.create({
+        user: appointment.patient,
+        title: 'Missed Appointment',
+        message: `You missed your appointment on ${appointment.date.toDateString()} at ${appointment.timeSlot}. You may reschedule up to ${appointment.maxReschedules - appointment.rescheduleCount} more time(s).`,
+        type: 'appointment',
+        meta: { appointmentId: appointment._id.toString() },
+    });
+
+    res.json({ success: true, appointment });
+});
+
+// @desc    Patient requests reschedule for a no-show appointment
+// @route   PUT /api/appointments/:id/reschedule
+const rescheduleAppointment = asyncHandler(async (req, res) => {
+    const { date, timeSlot } = req.body;
+    if (!date || !timeSlot) {
+        res.status(400);
+        throw new Error('New date and time slot are required');
+    }
+
+    const normalizedSlot = normalizeSlot(timeSlot);
+    const appointment = await Appointment.findById(req.params.id);
+
+    if (!appointment) {
+        res.status(404);
+        throw new Error('Appointment not found');
+    }
+
+    if (appointment.patient.toString() !== req.user._id.toString()) {
+        res.status(403);
+        throw new Error('Not authorized');
+    }
+
+    if (appointment.status !== 'no-show') {
+        res.status(400);
+        throw new Error('Only no-show appointments can be rescheduled');
+    }
+
+    if (appointment.rescheduleCount >= appointment.maxReschedules) {
+        // Max reschedules reached — expire it
+        appointment.status = 'expired';
+        await appointment.save();
+        res.status(400);
+        throw new Error('Maximum reschedule attempts reached. This appointment has expired.');
+    }
+
+    // Check the new slot isn't already booked
+    const conflict = await Appointment.findOne({
+        doctor: appointment.doctor,
+        date: new Date(date),
+        timeSlot: normalizedSlot,
+        status: { $in: ['pending', 'confirmed', 'rescheduling'] },
+        _id: { $ne: appointment._id },
+    });
+
+    if (conflict) {
+        res.status(400);
+        throw new Error('This time slot is already booked');
+    }
+
+    // Store the old slot info and set pending reschedule
+    appointment.pendingReschedule = {
+        date: new Date(date),
+        timeSlot: normalizedSlot,
+        requestedAt: new Date(),
+    };
+    appointment.status = 'rescheduling';
+    await appointment.save();
+
+    // Notify doctor
+    const doctor = await Doctor.findById(appointment.doctor).select('user');
+    if (doctor?.user) {
+        await Notification.create({
+            user: doctor.user,
+            title: 'Reschedule Request',
+            message: `A patient has requested to reschedule their appointment to ${new Date(date).toDateString()} at ${normalizedSlot}.`,
+            type: 'appointment',
+            meta: { appointmentId: appointment._id.toString() },
+        });
+    }
+
+    res.json({ success: true, appointment });
+});
+
+// @desc    Doctor accepts reschedule request
+// @route   PUT /api/appointments/:id/reschedule/accept
+const acceptReschedule = asyncHandler(async (req, res) => {
+    const doctor = await Doctor.findOne({ user: req.user._id });
+    const appointment = await Appointment.findById(req.params.id);
+
+    if (!appointment) {
+        res.status(404);
+        throw new Error('Appointment not found');
+    }
+
+    if (appointment.doctor.toString() !== doctor._id.toString()) {
+        res.status(403);
+        throw new Error('Not authorized');
+    }
+
+    if (appointment.status !== 'rescheduling' || !appointment.pendingReschedule?.date) {
+        res.status(400);
+        throw new Error('No pending reschedule request');
+    }
+
+    // Double-check the new slot is still free
+    const conflict = await Appointment.findOne({
+        doctor: doctor._id,
+        date: appointment.pendingReschedule.date,
+        timeSlot: appointment.pendingReschedule.timeSlot,
+        status: { $in: ['pending', 'confirmed', 'rescheduling'] },
+        _id: { $ne: appointment._id },
+    });
+
+    if (conflict) {
+        res.status(400);
+        throw new Error('The requested slot has been booked by another patient in the meantime');
+    }
+
+    // Record in history
+    appointment.rescheduleHistory.push({
+        fromDate: appointment.date,
+        fromTimeSlot: appointment.timeSlot,
+        toDate: appointment.pendingReschedule.date,
+        toTimeSlot: appointment.pendingReschedule.timeSlot,
+        requestedAt: appointment.pendingReschedule.requestedAt,
+        status: 'accepted',
+        respondedAt: new Date(),
+    });
+
+    // Move to new slot
+    appointment.date = appointment.pendingReschedule.date;
+    appointment.timeSlot = appointment.pendingReschedule.timeSlot;
+    appointment.pendingReschedule = undefined;
+    appointment.rescheduleCount += 1;
+    appointment.status = 'confirmed';
+    await appointment.save();
+
+    await Notification.create({
+        user: appointment.patient,
+        title: 'Reschedule Accepted',
+        message: `Your reschedule request has been accepted. New appointment: ${appointment.date.toDateString()} at ${appointment.timeSlot}.`,
+        type: 'appointment',
+        meta: { appointmentId: appointment._id.toString() },
+    });
+
+    res.json({ success: true, appointment });
+});
+
+// @desc    Doctor rejects reschedule request
+// @route   PUT /api/appointments/:id/reschedule/reject
+const rejectReschedule = asyncHandler(async (req, res) => {
+    const doctor = await Doctor.findOne({ user: req.user._id });
+    const appointment = await Appointment.findById(req.params.id);
+
+    if (!appointment) {
+        res.status(404);
+        throw new Error('Appointment not found');
+    }
+
+    if (appointment.doctor.toString() !== doctor._id.toString()) {
+        res.status(403);
+        throw new Error('Not authorized');
+    }
+
+    if (appointment.status !== 'rescheduling' || !appointment.pendingReschedule?.date) {
+        res.status(400);
+        throw new Error('No pending reschedule request');
+    }
+
+    // Record in history
+    appointment.rescheduleHistory.push({
+        fromDate: appointment.date,
+        fromTimeSlot: appointment.timeSlot,
+        toDate: appointment.pendingReschedule.date,
+        toTimeSlot: appointment.pendingReschedule.timeSlot,
+        requestedAt: appointment.pendingReschedule.requestedAt,
+        status: 'rejected',
+        respondedAt: new Date(),
+    });
+
+    appointment.pendingReschedule = undefined;
+    appointment.rescheduleCount += 1;
+
+    // If max reschedules reached, expire it
+    if (appointment.rescheduleCount >= appointment.maxReschedules) {
+        appointment.status = 'expired';
+    } else {
+        appointment.status = 'no-show'; // Back to no-show so patient can try again
+    }
+    await appointment.save();
+
+    const remainingAttempts = appointment.maxReschedules - appointment.rescheduleCount;
+    await Notification.create({
+        user: appointment.patient,
+        title: 'Reschedule Rejected',
+        message: remainingAttempts > 0
+            ? `Your reschedule request was rejected. You have ${remainingAttempts} reschedule attempt(s) remaining.`
+            : `Your reschedule request was rejected and the appointment has expired. No more reschedule attempts available.`,
+        type: 'appointment',
+        meta: { appointmentId: appointment._id.toString() },
+    });
+
+    res.json({ success: true, appointment });
+});
+
+// @desc    Get no-show patients for a doctor
+// @route   GET /api/appointments/doctor/no-shows
+const getDoctorNoShows = asyncHandler(async (req, res) => {
+    const doctor = await Doctor.findOne({ user: req.user._id });
+    if (!doctor) {
+        res.status(404);
+        throw new Error('Doctor profile not found');
+    }
+
+    const noShows = await Appointment.find({
+        doctor: doctor._id,
+        status: { $in: ['no-show', 'expired', 'rescheduling'] },
+    })
+        .populate('patient', 'name email phone avatar city')
+        .sort({ noShowAt: -1 });
+
+    // Aggregate no-show counts per patient
+    const patientMap = {};
+    noShows.forEach(apt => {
+        const pid = apt.patient?._id?.toString();
+        if (!pid) return;
+        if (!patientMap[pid]) {
+            patientMap[pid] = {
+                patient: apt.patient,
+                noShowCount: 0,
+                appointments: [],
+            };
+        }
+        patientMap[pid].noShowCount += 1;
+        patientMap[pid].appointments.push(apt);
+    });
+
+    res.json({
+        success: true,
+        totalNoShows: noShows.length,
+        patients: Object.values(patientMap),
+        appointments: noShows,
+    });
+});
+
 module.exports = {
     createAppointment, getMyAppointments, getDoctorAppointments,
     acceptAppointment, rejectAppointment, completeAppointment,
     cancelAppointment, getPatientDashboard, getAppointmentDetail,
+    markNoShow, rescheduleAppointment, acceptReschedule, rejectReschedule,
+    getDoctorNoShows,
 };

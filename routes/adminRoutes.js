@@ -4,10 +4,13 @@ const {
     getDashboardStats,
     getPendingDoctors, approveDoctor, rejectDoctor, getAllDoctors, editDoctor,
     getAllUsers, blockUser, unblockUser,
+    getUserDetail, resetUserPassword,
+    getDoctorDetail,
     getAllAppointments, overrideAppointmentStatus,
     getAllPayments,
     getReports,
     getSettings, updateSettings,
+    getAnnouncements, createAnnouncement, updateAnnouncement, deleteAnnouncement,
 } = require('../controllers/adminController');
 const { protect, authorize } = require('../middleware/auth');
 
@@ -20,14 +23,17 @@ router.get('/dashboard', getDashboardStats);
 // Doctor management
 router.get('/doctors', getAllDoctors);
 router.get('/doctors/pending', getPendingDoctors);
+router.get('/doctors/:id/detail', getDoctorDetail);
 router.put('/doctors/:id/approve', approveDoctor);
 router.put('/doctors/:id/reject', rejectDoctor);
 router.put('/doctors/:id', editDoctor);
 
 // User management
 router.get('/users', getAllUsers);
+router.get('/users/:id', getUserDetail);
 router.put('/users/:id/block', blockUser);
 router.put('/users/:id/unblock', unblockUser);
+router.put('/users/:id/reset-password', resetUserPassword);
 
 // Appointment management
 router.get('/appointments', getAllAppointments);
@@ -42,5 +48,11 @@ router.get('/reports', getReports);
 // Settings
 router.get('/settings', getSettings);
 router.put('/settings', updateSettings);
+
+// Announcements
+router.get('/announcements', getAnnouncements);
+router.post('/announcements', createAnnouncement);
+router.put('/announcements/:id', updateAnnouncement);
+router.delete('/announcements/:id', deleteAnnouncement);
 
 module.exports = router;

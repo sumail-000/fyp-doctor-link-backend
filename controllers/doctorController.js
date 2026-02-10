@@ -199,17 +199,37 @@ const getDoctorSlots = asyncHandler(async (req, res) => {
         const bookedAppointments = await Appointment.find({
             doctor: doctor._id,
             date: { $gte: queryDate, $lt: nextDay },
-            status: { $in: ['pending', 'confirmed'] },
+            status: { $in: ['pending', 'confirmed', 'rescheduling'] },
         }).select('timeSlot');
 
         bookedSlots = bookedAppointments.map(a => a.timeSlot);
+
+        // Also block slots that are pending reschedule targets
+        const rescheduleTargets = await Appointment.find({
+            doctor: doctor._id,
+            'pendingReschedule.date': { $gte: queryDate, $lt: nextDay },
+            status: 'rescheduling',
+        }).select('pendingReschedule.timeSlot');
+
+        rescheduleTargets.forEach(a => {
+            if (a.pendingReschedule?.timeSlot && !bookedSlots.includes(a.pendingReschedule.timeSlot)) {
+                bookedSlots.push(a.pendingReschedule.timeSlot);
+            }
+        });
     }
+
+    // Compute available slots for the requested date
+    const dayOfWeek = req.query.date ? new Date(req.query.date).toLocaleDateString('en-US', { weekday: 'long' }) : null;
+    const daySchedule = dayOfWeek ? (doctor.schedule || []).find(s => s.day === dayOfWeek) : null;
+    const allSlots = daySchedule?.isActive !== false ? (daySchedule?.slots || []) : [];
+    const availableSlots = allSlots.filter(s => !bookedSlots.includes(s));
 
     res.json({
         success: true,
         schedule: doctor.schedule,
         fee: doctor.fee,
         bookedSlots,
+        availableSlots,
     });
 });
 

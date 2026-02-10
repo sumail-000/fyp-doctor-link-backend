@@ -1,10 +1,13 @@
 const asyncHandler = require('express-async-handler');
+const bcrypt = require('bcryptjs');
 const User = require('../models/User');
 const Doctor = require('../models/Doctor');
 const Appointment = require('../models/Appointment');
 const Payment = require('../models/Payment');
 const Review = require('../models/Review');
 const Setting = require('../models/Setting');
+const Announcement = require('../models/Announcement');
+const Notification = require('../models/Notification');
 
 // ==================== DASHBOARD ====================
 
@@ -244,7 +247,7 @@ const overrideAppointmentStatus = asyncHandler(async (req, res) => {
         throw new Error('Appointment not found');
     }
 
-    const validStatuses = ['pending', 'confirmed', 'completed', 'cancelled'];
+    const validStatuses = ['pending', 'confirmed', 'completed', 'cancelled', 'no-show', 'expired'];
     if (!validStatuses.includes(status)) {
         res.status(400);
         throw new Error('Invalid status');
@@ -425,12 +428,227 @@ const updateSettings = asyncHandler(async (req, res) => {
     res.json({ success: true, settings });
 });
 
+// ==================== USER/DOCTOR DETAIL ====================
+
+// @desc    Get single patient detail (admin)
+// @route   GET /api/admin/users/:id
+const getUserDetail = asyncHandler(async (req, res) => {
+    const user = await User.findById(req.params.id);
+    if (!user) { res.status(404); throw new Error('User not found'); }
+
+    const appointments = await Appointment.find({ patient: user._id })
+        .populate({ path: 'doctor', select: 'fullName specialization avatar' })
+        .sort({ createdAt: -1 })
+        .limit(20);
+
+    const payments = await Payment.find({ patient: user._id })
+        .sort({ createdAt: -1 })
+        .limit(10);
+
+    const totalSpent = await Payment.aggregate([
+        { $match: { patient: user._id, status: 'completed' } },
+        { $group: { _id: null, total: { $sum: '$amount' } } },
+    ]);
+
+    const announcements = await Announcement.find({ targetUser: user._id, isActive: true }).sort({ createdAt: -1 });
+
+    res.json({
+        success: true,
+        user,
+        appointments,
+        payments,
+        totalSpent: totalSpent[0]?.total || 0,
+        announcements,
+    });
+});
+
+// @desc    Get single doctor detail (admin)
+// @route   GET /api/admin/doctors/:id/detail
+const getDoctorDetail = asyncHandler(async (req, res) => {
+    const doctor = await Doctor.findById(req.params.id).populate('user', 'name email phone avatar city isBlocked createdAt dob gender address');
+    if (!doctor) { res.status(404); throw new Error('Doctor not found'); }
+
+    const appointments = await Appointment.find({ doctor: doctor._id })
+        .populate('patient', 'name avatar email')
+        .sort({ createdAt: -1 })
+        .limit(20);
+
+    const payments = await Payment.find({ doctor: doctor._id, status: 'completed' })
+        .sort({ createdAt: -1 })
+        .limit(10);
+
+    const totalEarnings = await Payment.aggregate([
+        { $match: { doctor: doctor._id, status: 'completed' } },
+        { $group: { _id: null, total: { $sum: '$doctorEarning' }, platformFees: { $sum: '$platformFee' } } },
+    ]);
+
+    const reviews = await Review.find({ doctor: doctor._id })
+        .populate('user', 'name avatar')
+        .sort({ createdAt: -1 })
+        .limit(10);
+
+    const announcements = await Announcement.find({ targetUser: doctor.user?._id, isActive: true }).sort({ createdAt: -1 });
+
+    res.json({
+        success: true,
+        doctor,
+        appointments,
+        payments,
+        totalEarnings: totalEarnings[0]?.total || 0,
+        platformFees: totalEarnings[0]?.platformFees || 0,
+        reviews,
+        announcements,
+    });
+});
+
+// @desc    Admin reset password for a user
+// @route   PUT /api/admin/users/:id/reset-password
+const resetUserPassword = asyncHandler(async (req, res) => {
+    const { newPassword } = req.body;
+    if (!newPassword || newPassword.length < 6) {
+        res.status(400);
+        throw new Error('Password must be at least 6 characters');
+    }
+
+    const user = await User.findById(req.params.id).select('+password');
+    if (!user) { res.status(404); throw new Error('User not found'); }
+    if (user.role === 'admin') { res.status(400); throw new Error('Cannot reset admin password from here'); }
+
+    user.password = newPassword;
+    await user.save();
+
+    res.json({ success: true, message: 'Password reset successfully' });
+});
+
+// ==================== ANNOUNCEMENTS ====================
+
+// @desc    Get all announcements
+// @route   GET /api/admin/announcements
+const getAnnouncements = asyncHandler(async (req, res) => {
+    const announcements = await Announcement.find()
+        .populate('targetUser', 'name email role')
+        .populate('createdBy', 'name')
+        .sort({ createdAt: -1 });
+
+    res.json({ success: true, announcements });
+});
+
+// @desc    Create announcement
+// @route   POST /api/admin/announcements
+const createAnnouncement = asyncHandler(async (req, res) => {
+    const { title, message, type, audience, targetUser, isDismissible, expiresAt } = req.body;
+
+    const announcement = await Announcement.create({
+        title,
+        message,
+        type: type || 'info',
+        audience: targetUser ? 'all' : (audience || 'all'),
+        targetUser: targetUser || null,
+        isDismissible: isDismissible !== false,
+        isActive: true,
+        createdBy: req.user._id,
+        expiresAt: expiresAt || null,
+    });
+
+    // Send notification to targeted user if individual
+    if (targetUser) {
+        await Notification.create({
+            user: targetUser,
+            title: `Announcement: ${title}`,
+            message,
+            type: type || 'info',
+            meta: { announcementId: announcement._id },
+        });
+    }
+
+    res.status(201).json({ success: true, announcement });
+});
+
+// @desc    Update announcement
+// @route   PUT /api/admin/announcements/:id
+const updateAnnouncement = asyncHandler(async (req, res) => {
+    const announcement = await Announcement.findById(req.params.id);
+    if (!announcement) { res.status(404); throw new Error('Announcement not found'); }
+
+    const { title, message, type, audience, isDismissible, isActive, expiresAt } = req.body;
+    if (title !== undefined) announcement.title = title;
+    if (message !== undefined) announcement.message = message;
+    if (type !== undefined) announcement.type = type;
+    if (audience !== undefined) announcement.audience = audience;
+    if (isDismissible !== undefined) announcement.isDismissible = isDismissible;
+    if (isActive !== undefined) announcement.isActive = isActive;
+    if (expiresAt !== undefined) announcement.expiresAt = expiresAt;
+
+    await announcement.save();
+    res.json({ success: true, announcement });
+});
+
+// @desc    Delete announcement
+// @route   DELETE /api/admin/announcements/:id
+const deleteAnnouncement = asyncHandler(async (req, res) => {
+    const announcement = await Announcement.findById(req.params.id);
+    if (!announcement) { res.status(404); throw new Error('Announcement not found'); }
+
+    await announcement.deleteOne();
+    res.json({ success: true, message: 'Announcement deleted' });
+});
+
+// @desc    Get active announcements for current user (public-facing)
+// @route   GET /api/announcements/active
+const getActiveAnnouncements = asyncHandler(async (req, res) => {
+    const now = new Date();
+    const userRole = req.user.role;
+
+    const query = {
+        isActive: true,
+        $or: [
+            { expiresAt: null },
+            { expiresAt: { $gt: now } },
+        ],
+    };
+
+    // Get global announcements for this user's audience + individual ones
+    const announcements = await Announcement.find({
+        ...query,
+        $or: [
+            { targetUser: null, audience: { $in: ['all', userRole === 'doctor' ? 'doctors' : 'patients'] } },
+            { targetUser: req.user._id },
+        ],
+        dismissedBy: { $ne: req.user._id },
+    }).sort({ createdAt: -1 });
+
+    res.json({ success: true, announcements });
+});
+
+// @desc    Dismiss an announcement
+// @route   PUT /api/announcements/:id/dismiss
+const dismissAnnouncement = asyncHandler(async (req, res) => {
+    const announcement = await Announcement.findById(req.params.id);
+    if (!announcement) { res.status(404); throw new Error('Announcement not found'); }
+
+    if (!announcement.isDismissible) {
+        res.status(400);
+        throw new Error('This announcement cannot be dismissed');
+    }
+
+    if (!announcement.dismissedBy.includes(req.user._id)) {
+        announcement.dismissedBy.push(req.user._id);
+        await announcement.save();
+    }
+
+    res.json({ success: true, message: 'Announcement dismissed' });
+});
+
 module.exports = {
     getDashboardStats,
     getPendingDoctors, approveDoctor, rejectDoctor, getAllDoctors, editDoctor,
     getAllUsers, blockUser, unblockUser,
+    getUserDetail, resetUserPassword,
+    getDoctorDetail,
     getAllAppointments, overrideAppointmentStatus,
     getAllPayments,
     getReports,
     getSettings, updateSettings,
+    getAnnouncements, createAnnouncement, updateAnnouncement, deleteAnnouncement,
+    getActiveAnnouncements, dismissAnnouncement,
 };

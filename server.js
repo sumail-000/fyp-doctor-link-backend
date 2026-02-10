@@ -33,6 +33,7 @@ app.use('/api/reviews', require('./routes/reviewRoutes'));
 app.use('/api/admin', require('./routes/adminRoutes'));
 app.use('/api/contact', require('./routes/contactRoutes'));
 app.use('/api/notifications', require('./routes/notificationRoutes'));
+app.use('/api/announcements', require('./routes/announcementRoutes'));
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -48,6 +49,10 @@ app.use((err, req, res, next) => {
         message: err.message || 'Server Error',
     });
 });
+
+// Start cron jobs for no-show auto-detection and appointment reminders
+const { startAppointmentCron } = require('./utils/appointmentCron');
+startAppointmentCron();
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
