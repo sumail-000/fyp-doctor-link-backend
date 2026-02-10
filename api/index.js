@@ -4,19 +4,22 @@ const dotenv = require('dotenv');
 const path = require('path');
 const connectDB = require('../config/db');
 
-// Load env vars
+// Load env vars (for local dev — Vercel injects env vars directly)
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
 const app = express();
 
-// CORS — must be FIRST so preflight OPTIONS requests pass
-const allowedOrigins = (process.env.CLIENT_URL || 'http://localhost:5173').split(',').map(s => s.trim());
+// CORS — evaluate allowed origins dynamically per-request
 app.use(cors({
     origin: function (origin, callback) {
+        const allowedOrigins = (process.env.CLIENT_URL || 'http://localhost:5173')
+            .split(',')
+            .map(s => s.trim());
         if (!origin || allowedOrigins.includes(origin)) {
             callback(null, true);
         } else {
-            callback(new Error('Not allowed by CORS'));
+            console.log(`CORS blocked origin: ${origin}, allowed: ${allowedOrigins.join(', ')}`);
+            callback(null, true); // Allow all for now to debug, change back after confirming
         }
     },
     credentials: true,
@@ -52,9 +55,15 @@ app.use('/api/contact', require('../routes/contactRoutes'));
 app.use('/api/notifications', require('../routes/notificationRoutes'));
 app.use('/api/announcements', require('../routes/announcementRoutes'));
 
-// Health check
+// Health check — also shows env debug info
 app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+    res.json({
+        status: 'ok',
+        timestamp: new Date().toISOString(),
+        clientUrl: process.env.CLIENT_URL || 'NOT SET',
+        nodeEnv: process.env.NODE_ENV || 'NOT SET',
+        mongoConfigured: !!process.env.MONGO_URI,
+    });
 });
 
 // Error handler
