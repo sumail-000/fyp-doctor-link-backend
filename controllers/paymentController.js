@@ -292,6 +292,11 @@ const verifySession = asyncHandler(async (req, res) => {
 // @desc    Simulate payment success (for development without Stripe)
 // @route   POST /api/payments/simulate
 const simulatePayment = asyncHandler(async (req, res) => {
+    if (process.env.NODE_ENV === 'production') {
+        res.status(404);
+        throw new Error('Not found');
+    }
+
     const { appointmentId } = req.body;
 
     const appointment = await Appointment.findById(appointmentId);

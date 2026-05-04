@@ -3,6 +3,7 @@ const Appointment = require('../models/Appointment');
 const Doctor = require('../models/Doctor');
 const Payment = require('../models/Payment');
 const Notification = require('../models/Notification');
+const processRefund = require('../utils/processRefund');
 
 // Normalize '9:00 AM' → '09:00 AM' for consistent slot format
 const normalizeSlot = (slot) => {
@@ -155,6 +156,12 @@ const rejectAppointment = asyncHandler(async (req, res) => {
         throw new Error('Not authorized');
     }
 
+    // Refund first so we don't cancel the appointment if Stripe fails
+    if (appointment.paymentStatus === 'paid') {
+        await processRefund(appointment._id);
+        appointment.paymentStatus = 'refunded';
+    }
+
     appointment.status = 'cancelled';
     appointment.cancelledBy = 'doctor';
     appointment.cancelReason = req.body.reason || 'Rejected by doctor';
@@ -167,16 +174,6 @@ const rejectAppointment = asyncHandler(async (req, res) => {
         type: 'appointment',
         meta: { appointmentId: appointment._id.toString() },
     });
-
-    // Refund if paid
-    if (appointment.paymentStatus === 'paid') {
-        await Payment.findOneAndUpdate(
-            { appointment: appointment._id },
-            { status: 'refunded', refundedAt: new Date() }
-        );
-        appointment.paymentStatus = 'refunded';
-        await appointment.save();
-    }
 
     res.json({ success: true, appointment });
 });
@@ -244,6 +241,11 @@ const cancelAppointment = asyncHandler(async (req, res) => {
         throw new Error('Cannot cancel this appointment');
     }
 
+    if (appointment.paymentStatus === 'paid') {
+        await processRefund(appointment._id);
+        appointment.paymentStatus = 'refunded';
+    }
+
     appointment.status = 'cancelled';
     appointment.cancelledBy = 'patient';
     appointment.cancelReason = req.body.reason || 'Cancelled by patient';
@@ -258,16 +260,6 @@ const cancelAppointment = asyncHandler(async (req, res) => {
             type: 'appointment',
             meta: { appointmentId: appointment._id.toString() },
         });
-    }
-
-    // Refund if paid
-    if (appointment.paymentStatus === 'paid') {
-        await Payment.findOneAndUpdate(
-            { appointment: appointment._id },
-            { status: 'refunded', refundedAt: new Date() }
-        );
-        appointment.paymentStatus = 'refunded';
-        await appointment.save();
     }
 
     res.json({ success: true, appointment });

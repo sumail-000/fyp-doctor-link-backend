@@ -8,6 +8,7 @@ const Review = require('../models/Review');
 const Setting = require('../models/Setting');
 const Announcement = require('../models/Announcement');
 const Notification = require('../models/Notification');
+const processRefund = require('../utils/processRefund');
 
 // ==================== DASHBOARD ====================
 
@@ -255,10 +256,7 @@ const overrideAppointmentStatus = asyncHandler(async (req, res) => {
 
     // Handle refund if cancelling a paid appointment
     if (status === 'cancelled' && appointment.paymentStatus === 'paid') {
-        await Payment.findOneAndUpdate(
-            { appointment: appointment._id },
-            { status: 'refunded', refundedAt: new Date() }
-        );
+        await processRefund(appointment._id);
         appointment.paymentStatus = 'refunded';
         appointment.cancelledBy = 'admin';
     }
