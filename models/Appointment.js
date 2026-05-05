@@ -93,6 +93,18 @@ const appointmentSchema = new mongoose.Schema({
     reminderSentAt: {
         type: Date,
     },
+    // Prescription (uploaded by doctor after completing the appointment)
+    prescription: {
+        url: { type: String, default: '' },
+        notes: { type: String, default: '' },
+        uploadedAt: { type: Date },
+    },
+    // Referral (doctor refers patient to another doctor)
+    referredFrom: {
+        appointment: { type: mongoose.Schema.Types.ObjectId, ref: 'Appointment' },
+        doctor: { type: mongoose.Schema.Types.ObjectId, ref: 'Doctor' },
+        reason: { type: String, default: '' },
+    },
 }, {
     timestamps: true,
 });

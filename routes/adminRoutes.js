@@ -12,6 +12,7 @@ const {
     getSettings, updateSettings, resetAllSettings,
     changeAdminPassword, clearAllNotifications,
     getAnnouncements, createAnnouncement, updateAnnouncement, deleteAnnouncement,
+    scrapeDoctorsAndIngest,
 } = require('../controllers/adminController');
 const { protect, authorize } = require('../middleware/auth');
 
@@ -62,5 +63,8 @@ router.get('/announcements', getAnnouncements);
 router.post('/announcements', createAnnouncement);
 router.put('/announcements/:id', updateAnnouncement);
 router.delete('/announcements/:id', deleteAnnouncement);
+
+// Web scraping ingest
+router.post('/scrape-doctors', scrapeDoctorsAndIngest);
 
 module.exports = router;

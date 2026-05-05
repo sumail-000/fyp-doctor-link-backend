@@ -16,7 +16,9 @@ const allowedOrigins = (process.env.CLIENT_URL || 'http://localhost:5173').split
 app.use(cors({
     origin: function (origin, callback) {
         const cleanOrigin = origin ? origin.replace(/\/+$/, '') : '';
-        if (!origin || allowedOrigins.includes(cleanOrigin)) {
+        // In dev, allow any localhost / 127.0.0.1 port (Vite picks 5173/5174/5175 depending on availability)
+        const isLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(cleanOrigin);
+        if (!origin || allowedOrigins.includes(cleanOrigin) || (process.env.NODE_ENV !== 'production' && isLocalhost)) {
             callback(null, true);
         } else {
             callback(new Error('Not allowed by CORS'));
@@ -45,6 +47,8 @@ app.use('/api/admin', require('./routes/adminRoutes'));
 app.use('/api/contact', require('./routes/contactRoutes'));
 app.use('/api/notifications', require('./routes/notificationRoutes'));
 app.use('/api/announcements', require('./routes/announcementRoutes'));
+app.use('/api/ai', require('./routes/aiRoutes'));
+app.use('/api/messages', require('./routes/messageRoutes'));
 
 // Health check
 app.get('/api/health', (req, res) => {

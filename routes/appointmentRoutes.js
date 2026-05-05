@@ -6,8 +6,10 @@ const {
     cancelAppointment, getPatientDashboard, getAppointmentDetail,
     markNoShow, rescheduleAppointment, acceptReschedule, rejectReschedule,
     getDoctorNoShows,
+    uploadPrescriptionForAppointment, referAppointment,
 } = require('../controllers/appointmentController');
 const { protect, authorize } = require('../middleware/auth');
+const { uploadPrescription } = require('../middleware/upload');
 
 // Patient routes
 router.post('/', protect, authorize('patient'), createAppointment);
@@ -23,6 +25,8 @@ router.put('/:id/complete', protect, authorize('doctor'), completeAppointment);
 router.put('/:id/no-show', protect, authorize('doctor'), markNoShow);
 router.put('/:id/reschedule/accept', protect, authorize('doctor'), acceptReschedule);
 router.put('/:id/reschedule/reject', protect, authorize('doctor'), rejectReschedule);
+router.post('/:id/prescription', protect, authorize('doctor'), uploadPrescription, uploadPrescriptionForAppointment);
+router.post('/:id/refer', protect, authorize('doctor'), referAppointment);
 
 // Patient reschedule
 router.put('/:id/reschedule', protect, authorize('patient'), rescheduleAppointment);

@@ -9,6 +9,7 @@ const Setting = require('../models/Setting');
 const Announcement = require('../models/Announcement');
 const Notification = require('../models/Notification');
 const processRefund = require('../utils/processRefund');
+const { fetchAndParse } = require('../utils/scrapeDoctors');
 
 // ==================== DASHBOARD ====================
 
@@ -670,6 +671,74 @@ const clearAllNotifications = asyncHandler(async (req, res) => {
     res.json({ success: true, message: `Cleared ${result.deletedCount} notifications` });
 });
 
+// @desc    Scrape doctors from an external directory (or built-in sample)
+// @route   POST /api/admin/scrape-doctors
+// @access  Admin
+const scrapeDoctorsAndIngest = asyncHandler(async (req, res) => {
+    const { url, autoApprove } = req.body || {};
+    const parsed = await fetchAndParse(url);
+
+    let records, fetchError = null;
+    if (Array.isArray(parsed)) {
+        records = parsed;
+    } else {
+        fetchError = parsed.error;
+        records = parsed.fallback || [];
+    }
+
+    let inserted = 0;
+    let skipped = 0;
+    const errors = [];
+
+    for (const r of records) {
+        try {
+            const exists = await Doctor.findOne({ pmcNumber: r.pmc });
+            if (exists) { skipped++; continue; }
+
+            // Create a placeholder user (scraped doctors can't log in until verified)
+            const fakeEmail = `scraped+${r.pmc.toLowerCase()}@doctorlink.local`;
+            let user = await User.findOne({ email: fakeEmail });
+            if (!user) {
+                user = await User.create({
+                    name: r.fullName,
+                    email: fakeEmail,
+                    password: Math.random().toString(36).slice(2) + 'X1', // unguessable
+                    role: 'doctor',
+                });
+            }
+
+            await Doctor.create({
+                user: user._id,
+                fullName: r.fullName,
+                email: fakeEmail,
+                cnic: 'SCRAPED',
+                pmcNumber: r.pmc,
+                specialization: r.specialization,
+                experience: r.experience,
+                fee: r.fee,
+                location: r.city || 'Pakistan',
+                about: r.about,
+                source: 'scraped',
+                sourceUrl: url || 'sample://built-in',
+                status: autoApprove ? 'approved' : 'pending',
+            });
+            inserted++;
+        } catch (err) {
+            errors.push({ pmc: r.pmc, error: err.message });
+        }
+    }
+
+    res.json({
+        success: true,
+        url: url || 'sample://built-in',
+        fetchError,
+        totalParsed: records.length,
+        inserted,
+        skipped,
+        errors,
+    });
+});
+
 module.exports = {
     getDashboardStats,
     getPendingDoctors, approveDoctor, rejectDoctor, getAllDoctors, editDoctor,
@@ -683,4 +752,5 @@ module.exports = {
     changeAdminPassword, clearAllNotifications,
     getAnnouncements, createAnnouncement, updateAnnouncement, deleteAnnouncement,
     getActiveAnnouncements, dismissAnnouncement,
+    scrapeDoctorsAndIngest,
 };

@@ -89,6 +89,20 @@ const doctorSchema = new mongoose.Schema({
         type: Boolean,
         default: true,
     },
+    // Provenance — 'manual' for self-applied, 'scraped' for ingested from external directory
+    source: {
+        type: String,
+        enum: ['manual', 'scraped'],
+        default: 'manual',
+    },
+    sourceUrl: {
+        type: String,
+        default: '',
+    },
+    // Geocoded clinic location (optional)
+    latitude: { type: Number, default: null },
+    longitude: { type: Number, default: null },
+    geocodedAt: { type: Date },
     // Stats (denormalized for performance)
     rating: {
         type: Number,

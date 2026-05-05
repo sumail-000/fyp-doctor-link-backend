@@ -16,7 +16,9 @@ app.use(cors({
             .split(',')
             .map(s => s.trim().replace(/\/+$/, '')); // strip trailing slashes
         const cleanOrigin = origin ? origin.replace(/\/+$/, '') : '';
-        if (!origin || allowedOrigins.includes(cleanOrigin)) {
+        // In dev, allow any localhost / 127.0.0.1 port (Vite picks 5173/5174/5175 depending on availability)
+        const isLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(cleanOrigin);
+        if (!origin || allowedOrigins.includes(cleanOrigin) || (process.env.NODE_ENV !== 'production' && isLocalhost)) {
             callback(null, true);
         } else {
             console.log(`CORS blocked origin: ${origin}, allowed: ${allowedOrigins.join(', ')}`);
@@ -33,6 +35,10 @@ app.use(express.json({
     },
 }));
 app.use(express.urlencoded({ extended: true }));
+
+// Static uploads (works on local dev; on Vercel serverless the disk is
+// ephemeral so uploads only persist for the lifetime of one function instance)
+app.use('/uploads', express.static(path.join(__dirname, '..', 'uploads')));
 
 // Connect to DB on every request (uses cached connection)
 app.use(async (req, res, next) => {
@@ -56,6 +62,8 @@ app.use('/api/contact', require('../routes/contactRoutes'));
 app.use('/api/notifications', require('../routes/notificationRoutes'));
 app.use('/api/announcements', require('../routes/announcementRoutes'));
 app.use('/api/cron', require('../routes/cronRoutes'));
+app.use('/api/ai', require('../routes/aiRoutes'));
+app.use('/api/messages', require('../routes/messageRoutes'));
 
 // Health check — also shows env debug info
 app.get('/api/health', (req, res) => {

@@ -1,6 +1,8 @@
 const asyncHandler = require('express-async-handler');
 const Doctor = require('../models/Doctor');
 const User = require('../models/User');
+const { recommendDoctors, recommendForPatient } = require('../utils/recommendDoctors');
+const { geocode } = require('../utils/geocode');
 
 // Normalize '9:00 AM' → '09:00 AM' for consistent slot format
 const normalizeSlot = (slot) => {
@@ -18,6 +20,15 @@ const applyDoctor = asyncHandler(async (req, res) => {
         degree, about, phone,
     } = req.body;
 
+    // Required document uploads
+    const files = req.files || {};
+    const required = ['pmcLicense', 'degreeCertificate', 'cnicCopy'];
+    const missing = required.filter((k) => !files[k] || !files[k][0]);
+    if (missing.length) {
+        res.status(400);
+        throw new Error(`Missing required document(s): ${missing.join(', ')}`);
+    }
+
     // Check if PMC already registered
     const existingDoctor = await Doctor.findOne({ pmcNumber });
     if (existingDoctor) {
@@ -31,6 +42,13 @@ const applyDoctor = asyncHandler(async (req, res) => {
         res.status(400);
         throw new Error('An account with this email already exists');
     }
+
+    const toUrl = (f) => `/uploads/doctors/${f.filename}`;
+    const documents = {
+        pmcLicense: toUrl(files.pmcLicense[0]),
+        degreeCertificate: toUrl(files.degreeCertificate[0]),
+        cnicCopy: toUrl(files.cnicCopy[0]),
+    };
 
     // Create user account with doctor role
     const user = await User.create({
@@ -55,6 +73,7 @@ const applyDoctor = asyncHandler(async (req, res) => {
         location,
         degree: degree || '',
         about: about || '',
+        documents,
         status: 'pending',
     });
 
@@ -416,8 +435,48 @@ const getMyEarnings = asyncHandler(async (req, res) => {
     });
 });
 
+// @desc    Doctor: refresh own clinic geo coordinates (uses location field)
+// @route   POST /api/doctors/me/geocode
+const geocodeMyLocation = asyncHandler(async (req, res) => {
+    const doctor = await Doctor.findOne({ user: req.user._id });
+    if (!doctor) { res.status(404); throw new Error('Doctor profile not found'); }
+
+    const result = await geocode(`${doctor.location}, Pakistan`);
+    if (!result) {
+        res.status(502);
+        throw new Error('Could not geocode clinic location. Try a more specific address.');
+    }
+
+    doctor.latitude = result.latitude;
+    doctor.longitude = result.longitude;
+    doctor.geocodedAt = new Date();
+    await doctor.save();
+
+    res.json({ success: true, latitude: doctor.latitude, longitude: doctor.longitude });
+});
+
+// @desc    Public: top recommended doctors, optionally filtered by specialization
+// @route   GET /api/doctors/recommended?specialization=X&limit=5
+const getRecommendedDoctors = asyncHandler(async (req, res) => {
+    const { specialization, limit } = req.query;
+    const doctors = await recommendDoctors({
+        specialization,
+        limit: Math.min(parseInt(limit) || 5, 20),
+    });
+    res.json({ success: true, count: doctors.length, doctors });
+});
+
+// @desc    Authenticated patient: personalized recommendations
+// @route   GET /api/doctors/recommended-for-me
+const getRecommendedForMe = asyncHandler(async (req, res) => {
+    const doctors = await recommendForPatient(req.user._id, { limit: 6 });
+    res.json({ success: true, count: doctors.length, doctors });
+});
+
 module.exports = {
     applyDoctor, doctorLogin, getDoctors, getDoctor, getDoctorSlots,
     getMyProfile, updateMyProfile, updateSchedule,
     getDashboardStats, getMyPatients, getMyEarnings,
+    getRecommendedDoctors, getRecommendedForMe,
+    geocodeMyLocation,
 };

@@ -1,4 +1,6 @@
 const asyncHandler = require('express-async-handler');
+const path = require('path');
+const fs = require('fs');
 const Appointment = require('../models/Appointment');
 const Doctor = require('../models/Doctor');
 const Payment = require('../models/Payment');
@@ -265,6 +267,123 @@ const cancelAppointment = asyncHandler(async (req, res) => {
     res.json({ success: true, appointment });
 });
 
+// @desc    Doctor uploads a prescription on a completed appointment
+// @route   POST /api/appointments/:id/prescription
+// @access  Doctor only, completed appointments only
+const uploadPrescriptionForAppointment = asyncHandler(async (req, res) => {
+    const doctor = await Doctor.findOne({ user: req.user._id });
+    const appointment = await Appointment.findById(req.params.id);
+    if (!appointment) { res.status(404); throw new Error('Appointment not found'); }
+    if (!doctor || appointment.doctor.toString() !== doctor._id.toString()) {
+        res.status(403); throw new Error('Not authorized');
+    }
+    if (appointment.status !== 'completed') {
+        res.status(400); throw new Error('Prescription can only be added to completed appointments');
+    }
+    if (!req.file) {
+        res.status(400); throw new Error('Prescription file is required');
+    }
+
+    // If a prescription already exists, delete the old file
+    if (appointment.prescription?.url) {
+        const old = path.join(__dirname, '..', appointment.prescription.url.replace(/^\//, ''));
+        fs.unlink(old, () => {}); // best-effort
+    }
+
+    appointment.prescription = {
+        url: `/uploads/prescriptions/${req.file.filename}`,
+        notes: req.body.notes || '',
+        uploadedAt: new Date(),
+    };
+    await appointment.save();
+
+    await Notification.create({
+        user: appointment.patient,
+        title: 'Prescription available',
+        message: `Dr. ${doctor.fullName} uploaded a prescription for your appointment on ${appointment.date.toDateString()}.`,
+        type: 'appointment',
+        meta: { appointmentId: appointment._id.toString() },
+    });
+
+    res.json({ success: true, appointment });
+});
+
+// @desc    Doctor refers a patient to another doctor (creates a new pending appointment)
+// @route   POST /api/appointments/:id/refer
+// @access  Doctor only
+const referAppointment = asyncHandler(async (req, res) => {
+    const { toDoctorId, reason, date, timeSlot } = req.body;
+    if (!toDoctorId || !date || !timeSlot) {
+        res.status(400); throw new Error('toDoctorId, date and timeSlot are required');
+    }
+
+    const fromDoctor = await Doctor.findOne({ user: req.user._id });
+    const original = await Appointment.findById(req.params.id);
+    if (!original) { res.status(404); throw new Error('Appointment not found'); }
+    if (!fromDoctor || original.doctor.toString() !== fromDoctor._id.toString()) {
+        res.status(403); throw new Error('Not authorized');
+    }
+    if (toDoctorId === fromDoctor._id.toString()) {
+        res.status(400); throw new Error('Cannot refer to yourself');
+    }
+
+    const toDoctor = await Doctor.findById(toDoctorId);
+    if (!toDoctor || toDoctor.status !== 'approved') {
+        res.status(404); throw new Error('Target doctor not found or not approved');
+    }
+
+    const normalizedSlot = normalizeSlot(timeSlot);
+    const conflict = await Appointment.findOne({
+        doctor: toDoctorId,
+        date: new Date(date),
+        timeSlot: normalizedSlot,
+        status: { $nin: ['cancelled', 'no-show', 'expired'] },
+    });
+    if (conflict) {
+        res.status(400); throw new Error('That slot is already booked with the referred doctor');
+    }
+
+    // Referrals don't charge again — payment carries over conceptually.
+    // The new appointment is marked paid: 'paid' if the original was paid.
+    const newAppointment = await Appointment.create({
+        patient: original.patient,
+        doctor: toDoctorId,
+        date: new Date(date),
+        timeSlot: normalizedSlot,
+        fee: toDoctor.fee || 0,
+        status: 'pending',
+        paymentStatus: original.paymentStatus === 'paid' ? 'paid' : 'pending',
+        notes: `Referred by Dr. ${fromDoctor.fullName}${reason ? ' — ' + reason : ''}`,
+        referredFrom: {
+            appointment: original._id,
+            doctor: fromDoctor._id,
+            reason: reason || '',
+        },
+    });
+
+    // Notify the patient
+    await Notification.create({
+        user: original.patient,
+        title: 'Referred to another specialist',
+        message: `Dr. ${fromDoctor.fullName} referred you to Dr. ${toDoctor.fullName} (${toDoctor.specialization}) on ${new Date(date).toDateString()} at ${normalizedSlot}.`,
+        type: 'appointment',
+        meta: { appointmentId: newAppointment._id.toString() },
+    });
+
+    // Notify the receiving doctor
+    if (toDoctor.user) {
+        await Notification.create({
+            user: toDoctor.user,
+            title: 'New referral received',
+            message: `Dr. ${fromDoctor.fullName} referred a patient to you on ${new Date(date).toDateString()} at ${normalizedSlot}.`,
+            type: 'appointment',
+            meta: { appointmentId: newAppointment._id.toString() },
+        });
+    }
+
+    res.status(201).json({ success: true, appointment: newAppointment });
+});
+
 // @desc    Get patient dashboard stats
 // @route   GET /api/appointments/dashboard
 const getPatientDashboard = asyncHandler(async (req, res) => {
@@ -306,7 +425,7 @@ const getAppointmentDetail = asyncHandler(async (req, res) => {
     const appointment = await Appointment.findById(req.params.id)
         .populate({
             path: 'doctor',
-            select: 'fullName specialization avatar location fee rating education languages',
+            select: 'fullName specialization avatar location fee rating education languages latitude longitude',
         })
         .populate({
             path: 'patient',
@@ -635,4 +754,5 @@ module.exports = {
     cancelAppointment, getPatientDashboard, getAppointmentDetail,
     markNoShow, rescheduleAppointment, acceptReschedule, rejectReschedule,
     getDoctorNoShows,
+    uploadPrescriptionForAppointment, referAppointment,
 };
