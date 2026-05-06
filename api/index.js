@@ -51,19 +51,39 @@ app.use(async (req, res, next) => {
     }
 });
 
-// Routes
-app.use('/api/auth', require('../routes/authRoutes'));
-app.use('/api/doctors', require('../routes/doctorRoutes'));
-app.use('/api/appointments', require('../routes/appointmentRoutes'));
-app.use('/api/payments', require('../routes/paymentRoutes'));
-app.use('/api/reviews', require('../routes/reviewRoutes'));
-app.use('/api/admin', require('../routes/adminRoutes'));
-app.use('/api/contact', require('../routes/contactRoutes'));
-app.use('/api/notifications', require('../routes/notificationRoutes'));
-app.use('/api/announcements', require('../routes/announcementRoutes'));
-app.use('/api/cron', require('../routes/cronRoutes'));
-app.use('/api/ai', require('../routes/aiRoutes'));
-app.use('/api/messages', require('../routes/messageRoutes'));
+// Per-route load tracking so a single broken require doesn't kill the whole
+// function, AND so /api/_diag can report which route(s) failed at boot.
+const _routeStatus = {};
+const safeMount = (mountPath, modulePath) => {
+    try {
+        // eslint-disable-next-line global-require, import/no-dynamic-require
+        app.use(mountPath, require(modulePath));
+        _routeStatus[mountPath] = 'ok';
+    } catch (e) {
+        _routeStatus[mountPath] = `LOAD_ERROR: ${e.message}`;
+        console.error(`[boot] failed to mount ${mountPath} (${modulePath}):`, e);
+        app.use(mountPath, (req, res) => {
+            res.status(500).json({
+                success: false,
+                message: `Route ${mountPath} failed to load on this deployment`,
+                error: e.message,
+            });
+        });
+    }
+};
+
+safeMount('/api/auth', '../routes/authRoutes');
+safeMount('/api/doctors', '../routes/doctorRoutes');
+safeMount('/api/appointments', '../routes/appointmentRoutes');
+safeMount('/api/payments', '../routes/paymentRoutes');
+safeMount('/api/reviews', '../routes/reviewRoutes');
+safeMount('/api/admin', '../routes/adminRoutes');
+safeMount('/api/contact', '../routes/contactRoutes');
+safeMount('/api/notifications', '../routes/notificationRoutes');
+safeMount('/api/announcements', '../routes/announcementRoutes');
+safeMount('/api/cron', '../routes/cronRoutes');
+safeMount('/api/ai', '../routes/aiRoutes');
+safeMount('/api/messages', '../routes/messageRoutes');
 
 // Health check — also shows env debug info
 app.get('/api/health', (req, res) => {
@@ -73,6 +93,23 @@ app.get('/api/health', (req, res) => {
         clientUrl: process.env.CLIENT_URL || 'NOT SET',
         nodeEnv: process.env.NODE_ENV || 'NOT SET',
         mongoConfigured: !!process.env.MONGO_URI,
+        node: process.version,
+    });
+});
+
+// Boot-time diagnostic — shows which routes loaded vs failed.
+app.get('/api/_diag', (req, res) => {
+    res.json({
+        node: process.version,
+        envFlags: {
+            MONGO_URI: !!process.env.MONGO_URI,
+            JWT_SECRET: !!process.env.JWT_SECRET,
+            ANTHROPIC_API_KEY: !!process.env.ANTHROPIC_API_KEY,
+            STRIPE_SECRET_KEY: !!process.env.STRIPE_SECRET_KEY,
+            CLIENT_URL: process.env.CLIENT_URL || null,
+            NODE_ENV: process.env.NODE_ENV || null,
+        },
+        routes: _routeStatus,
     });
 });
 
