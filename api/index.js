@@ -36,9 +36,12 @@ app.use(express.json({
 }));
 app.use(express.urlencoded({ extended: true }));
 
-// Static uploads (works on local dev; on Vercel serverless the disk is
-// ephemeral so uploads only persist for the lifetime of one function instance)
-app.use('/uploads', express.static(path.join(__dirname, '..', 'uploads')));
+// Static uploads. On Vercel the project FS is read-only outside /tmp, so we
+// serve from /tmp/uploads when running serverless. Files there are ephemeral
+// (lost on cold start) — for real persistence, route uploads to Vercel Blob.
+const _IS_SERVERLESS = !!process.env.VERCEL || !!process.env.AWS_LAMBDA_FUNCTION_NAME;
+const _UPLOAD_DIR = _IS_SERVERLESS ? '/tmp/uploads' : path.join(__dirname, '..', 'uploads');
+app.use('/uploads', express.static(_UPLOAD_DIR));
 
 // Connect to DB on every request (uses cached connection)
 app.use(async (req, res, next) => {

@@ -2,13 +2,27 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 
-const UPLOAD_ROOT = path.join(__dirname, '..', 'uploads');
+// On Vercel/Lambda the project filesystem is read-only — only /tmp is writable.
+// Uploads on Vercel are ephemeral (gone when the function instance recycles)
+// but at least the routes load and the demo runs. For real persistence on
+// Vercel, swap to Vercel Blob / Cloudinary / S3.
+const IS_SERVERLESS = !!process.env.VERCEL || !!process.env.AWS_LAMBDA_FUNCTION_NAME;
+const UPLOAD_ROOT = IS_SERVERLESS
+    ? '/tmp/uploads'
+    : path.join(__dirname, '..', 'uploads');
 const DOCTOR_DIR = path.join(UPLOAD_ROOT, 'doctors');
+const PRESCRIPTION_DIR = path.join(UPLOAD_ROOT, 'prescriptions');
 
-// Ensure folders exist (multer will not create them)
-[UPLOAD_ROOT, DOCTOR_DIR].forEach((dir) => {
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-});
+// Ensure folders exist (multer will not create them). Wrapped in try/catch
+// so a read-only filesystem at boot doesn't crash the whole module.
+const ensureDir = (dir) => {
+    try {
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    } catch (e) {
+        console.warn(`[upload] could not create ${dir}: ${e.message}`);
+    }
+};
+[UPLOAD_ROOT, DOCTOR_DIR, PRESCRIPTION_DIR].forEach(ensureDir);
 
 const storage = multer.diskStorage({
     destination: (req, file, cb) => cb(null, DOCTOR_DIR),
@@ -54,9 +68,6 @@ const symptomImageUpload = multer({
 }).single('image');
 
 // Disk storage for prescriptions (PDF or image)
-const PRESCRIPTION_DIR = path.join(__dirname, '..', 'uploads', 'prescriptions');
-if (!fs.existsSync(PRESCRIPTION_DIR)) fs.mkdirSync(PRESCRIPTION_DIR, { recursive: true });
-
 const prescriptionStorage = multer.diskStorage({
     destination: (req, file, cb) => cb(null, PRESCRIPTION_DIR),
     filename: (req, file, cb) => {
