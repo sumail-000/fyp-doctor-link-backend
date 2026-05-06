@@ -52,16 +52,17 @@ app.use(async (req, res, next) => {
 });
 
 // Per-route load tracking so a single broken require doesn't kill the whole
-// function, AND so /api/_diag can report which route(s) failed at boot.
+// function. NOTE: Vercel's bundler uses static analysis on require() calls,
+// so we must use literal string paths — dynamic require(variable) silently
+// drops files from the deployment.
 const _routeStatus = {};
-const safeMount = (mountPath, modulePath) => {
+const tryMount = (mountPath, loader) => {
     try {
-        // eslint-disable-next-line global-require, import/no-dynamic-require
-        app.use(mountPath, require(modulePath));
+        app.use(mountPath, loader());
         _routeStatus[mountPath] = 'ok';
     } catch (e) {
         _routeStatus[mountPath] = `LOAD_ERROR: ${e.message}`;
-        console.error(`[boot] failed to mount ${mountPath} (${modulePath}):`, e);
+        console.error(`[boot] failed to mount ${mountPath}:`, e);
         app.use(mountPath, (req, res) => {
             res.status(500).json({
                 success: false,
@@ -72,18 +73,18 @@ const safeMount = (mountPath, modulePath) => {
     }
 };
 
-safeMount('/api/auth', '../routes/authRoutes');
-safeMount('/api/doctors', '../routes/doctorRoutes');
-safeMount('/api/appointments', '../routes/appointmentRoutes');
-safeMount('/api/payments', '../routes/paymentRoutes');
-safeMount('/api/reviews', '../routes/reviewRoutes');
-safeMount('/api/admin', '../routes/adminRoutes');
-safeMount('/api/contact', '../routes/contactRoutes');
-safeMount('/api/notifications', '../routes/notificationRoutes');
-safeMount('/api/announcements', '../routes/announcementRoutes');
-safeMount('/api/cron', '../routes/cronRoutes');
-safeMount('/api/ai', '../routes/aiRoutes');
-safeMount('/api/messages', '../routes/messageRoutes');
+tryMount('/api/auth', () => require('../routes/authRoutes'));
+tryMount('/api/doctors', () => require('../routes/doctorRoutes'));
+tryMount('/api/appointments', () => require('../routes/appointmentRoutes'));
+tryMount('/api/payments', () => require('../routes/paymentRoutes'));
+tryMount('/api/reviews', () => require('../routes/reviewRoutes'));
+tryMount('/api/admin', () => require('../routes/adminRoutes'));
+tryMount('/api/contact', () => require('../routes/contactRoutes'));
+tryMount('/api/notifications', () => require('../routes/notificationRoutes'));
+tryMount('/api/announcements', () => require('../routes/announcementRoutes'));
+tryMount('/api/cron', () => require('../routes/cronRoutes'));
+tryMount('/api/ai', () => require('../routes/aiRoutes'));
+tryMount('/api/messages', () => require('../routes/messageRoutes'));
 
 // Health check — also shows env debug info
 app.get('/api/health', (req, res) => {
